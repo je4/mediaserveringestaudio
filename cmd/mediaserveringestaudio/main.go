@@ -85,7 +85,9 @@ func main() {
 	}
 	defer miniResolverClient.Close()
 
-	dbClient, err := resolver.NewClient[mediaserverproto.DatabaseClient](miniResolverClient, mediaserverproto.NewDatabaseClient, mediaserverproto.Database_ServiceDesc.ServiceName)
+	var dbClient mediaserverproto.DatabaseClient
+	serviceName := mediaserverproto.Database_ServiceDesc.ServiceName
+	dbClient, err = resolver.NewClient[mediaserverproto.DatabaseClient](miniResolverClient, mediaserverproto.NewDatabaseClient, serviceName)
 	if err != nil {
 		logger.Panic().Msgf("cannot create mediaserverdb grpc client: %v", err)
 	}

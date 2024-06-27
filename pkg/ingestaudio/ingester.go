@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/je4/filesystem/v3/pkg/writefs"
 	mediaserverproto "github.com/je4/mediaserverproto/v2/pkg/mediaserver/proto"
+	"github.com/je4/utils/v2/pkg/checksum"
 	"github.com/je4/utils/v2/pkg/zLogger"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -88,31 +89,105 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 
 	folder := uuid.New().String()
 	os.MkdirAll(filepath.Join(i.tempDir, folder), 0755)
-	params := []string{"-i", "-"}
+	defer func() {
+		os.RemoveAll(filepath.Join(i.tempDir, folder))
+	}()
+	params0 := []string{"-i", "-"}
 	if codec, ok := i.ffmpegOutputCodec["web"]; ok && slices.Contains(job.Missing, "$$web") {
-		params = append(params, codec...)
-		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "web.mp4")))
-	}
-	if codec, ok := i.ffmpegOutputCodec["wave"]; ok && slices.Contains(job.Missing, "$$wave") {
-		params = append(params, codec...)
-		params = append(params, "-vf", fmt.Sprintf("fps=%d/%d", 25, job.Duration), filepath.ToSlash(filepath.Join(i.tempDir, folder, "wave.png")))
-	}
-	if codec, ok := i.ffmpegOutputCodec["cover"]; ok && slices.Contains(job.Missing, "$$cover") {
-		params = append(params, codec...)
-		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "cover.png")))
+		params0 = append(params0, codec...)
+		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "web.mp4")))
 	}
 	if codec, ok := i.ffmpegOutputCodec["preview"]; ok && slices.Contains(job.Missing, "$$preview") {
-		params = append(params, codec...)
-		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "preview.mp4")))
+		params0 = append(params0, codec...)
+		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "preview.mp4")))
 	}
-	i.logger.Debug().Msgf("ffmpeg command: %s", strings.Join(params, " "))
-	subProcess := exec.Command(i.ffmpegPath, params...)
-	subProcess.Stdin = sourceReader
-	subProcess.Stdout = os.Stdout
-	subProcess.Stderr = os.Stderr
 
-	if err := subProcess.Run(); err != nil {
-		return errors.Wrap(err, "cannot run ffmpeg")
+	params1 := []string{"-i", "-"}
+	if codec, ok := i.ffmpegOutputCodec["wave"]; ok && slices.Contains(job.Missing, "$$wave") {
+		params1 = append(params1, codec...)
+		params1 = append(params1, filepath.ToSlash(filepath.Join(i.tempDir, folder, "wave.png")))
+	}
+	/*
+		if codec, ok := i.ffmpegOutputCodec["cover"]; ok && slices.Contains(job.Missing, "$$cover") {
+			params0 = append(params0, codec...)
+			params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "cover.png")))
+		}
+	*/
+	i.logger.Debug().Msgf("ffmpeg command: ffmpeg %s", strings.Join(params0, " "))
+	i.logger.Debug().Msgf("ffmpeg command: ffmpeg %s", strings.Join(params1, " "))
+	subProcess0 := exec.Command(i.ffmpegPath, params0...)
+
+	pr0, pw0 := io.Pipe()
+	//defer pr0.Close()
+
+	pr1, pw1 := io.Pipe()
+	//defer pr1.Close()
+
+	subProcess0.Stdin = pr0
+	subProcess0.Stdout = os.Stdout
+	subProcess0.Stderr = os.Stderr
+
+	subProcess1 := exec.Command(i.ffmpegPath, params1...)
+	subProcess1.Stdin = pr1
+	subProcess1.Stdout = os.Stdout
+	subProcess1.Stderr = os.Stderr
+
+	multiWriter := io.MultiWriter(pw0, pw1)
+
+	copyFuncResult := make(chan error)
+	go func() {
+		_, err := io.Copy(multiWriter, sourceReader)
+		if err != nil {
+			copyFuncResult <- errors.Wrap(err, "cannot copy source to multiwriter")
+			return
+		}
+		pw0.Close()
+		pw1.Close()
+		copyFuncResult <- nil
+	}()
+
+	ffmpeg0Result := make(chan error)
+	go func() {
+		n := &checksum.NullWriter{}
+		defer io.Copy(n, subProcess0.Stdin)
+		if err := subProcess0.Run(); err != nil {
+			ffmpeg0Result <- errors.Wrap(err, "cannot run ffmpeg0")
+			return
+		}
+
+		ffmpeg0Result <- nil
+	}()
+
+	ffmpeg1Result := make(chan error)
+	go func() {
+		n := &checksum.NullWriter{}
+		defer io.Copy(n, subProcess0.Stdin)
+		if err := subProcess1.Run(); err != nil {
+			ffmpeg1Result <- errors.Wrap(err, "cannot run ffmpeg1")
+			return
+		}
+		ffmpeg1Result <- nil
+	}()
+
+	var errs []error
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-copyFuncResult:
+			if err != nil {
+				errs = append(errs, err)
+			}
+		case err := <-ffmpeg0Result:
+			if err != nil {
+				errs = append(errs, err)
+			}
+		case err := <-ffmpeg1Result:
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Combine(errs...)
 	}
 
 	var public = item.GetPublic() || slices.Contains(item.GetPublicActions(), "audioviewer")
@@ -172,36 +247,7 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 		}
 		i.logger.Info().Msgf("created item %s/%s: %s", job.collection, waveSignature, resp.GetMessage())
 	}
-	if _, ok := i.ffmpegOutputCodec["cover"]; ok && slices.Contains(job.Missing, "$$cover") {
-		cover := filepath.Join(i.tempDir, folder, "cover.png")
-		if err != nil {
-			return errors.Wrapf(err, "cannot convert cover %s", cover)
-		}
-		coverSignature := fmt.Sprintf("%s$$wave", job.signature)
-		itemName := createCacheName(job.collection, coverSignature, cover)
-		targetPath := job.Storage.Filebase + "/" + filepath.ToSlash(filepath.Join(job.Storage.Subitemdir, itemName))
-		if _, err := writefs.Copy(i.vfs, cover, targetPath); err != nil {
-			return errors.Wrapf(err, "cannot copy '%s' to '%s'", cover, targetPath)
-		}
-		resp, err := i.dbClient.CreateItem(context.Background(), &mediaserverproto.NewItem{
-			Identifier: &mediaserverproto.ItemIdentifier{
-				Collection: job.collection,
-				Signature:  coverSignature,
-			},
-			Parent: &mediaserverproto.ItemIdentifier{
-				Collection: job.collection,
-				Signature:  job.signature,
-			},
-			Urn:        targetPath,
-			IngestType: &ingestType,
-			Public:     &public,
-		})
-		if err != nil {
-			return errors.Wrapf(err, "cannot create item %s/%s", job.collection, coverSignature)
-		}
-		i.logger.Info().Msgf("created item %s/%s: %s", job.collection, coverSignature, resp.GetMessage())
-	}
-	if slices.Contains(job.Missing, "$$preview") {
+	if _, ok := i.ffmpegOutputCodec["preview"]; ok && slices.Contains(job.Missing, "$$preview") {
 		source := filepath.Join(i.tempDir, folder, "preview.mp4")
 		targetSignature := job.signature + "$$preview"
 		itemName := createCacheName(job.collection, targetSignature, source)
@@ -237,7 +283,7 @@ func (i *IngesterAudio) Start() error {
 				item, err := i.dbClient.GetDerivateIngestItem(context.Background(), &mediaserverproto.DerivatIngestRequest{
 					Type:    "audio",
 					Subtype: "",
-					Suffix:  []string{"$$web", "$$cover", "$$preview", "$$wave"},
+					Suffix:  []string{"$$web", "$$preview", "$$wave"},
 				})
 				if err != nil {
 					if s, ok := status.FromError(err); ok {
