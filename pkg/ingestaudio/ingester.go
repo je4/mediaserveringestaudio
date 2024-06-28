@@ -93,13 +93,17 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 		os.RemoveAll(filepath.Join(i.tempDir, folder))
 	}()
 	params0 := []string{"-i", "-"}
-	if codec, ok := i.ffmpegOutputCodec["web"]; ok && slices.Contains(job.Missing, "$$web") {
+	if codec, ok := i.ffmpegOutputCodec["video"]; ok && slices.Contains(job.Missing, "$$video") {
 		params0 = append(params0, codec...)
-		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "web.mp4")))
+		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "video.mp4")))
 	}
 	if codec, ok := i.ffmpegOutputCodec["preview"]; ok && slices.Contains(job.Missing, "$$preview") {
 		params0 = append(params0, codec...)
 		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "preview.mp4")))
+	}
+	if codec, ok := i.ffmpegOutputCodec["web"]; ok && slices.Contains(job.Missing, "$$web") {
+		params0 = append(params0, codec...)
+		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "web.m4a")))
 	}
 
 	params1 := []string{"-i", "-"}
@@ -194,7 +198,7 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 	var ingestType = mediaserverproto.IngestType_KEEP
 
 	if _, ok := i.ffmpegOutputCodec["web"]; ok && slices.Contains(job.Missing, "$$web") {
-		source := filepath.Join(i.tempDir, folder, "web.mp4")
+		source := filepath.Join(i.tempDir, folder, "web.m4a")
 		itemName := createCacheName(job.collection, job.signature+"$$web", source)
 		itemPath := job.Storage.Filebase + "/" + filepath.ToSlash(filepath.Join(job.Storage.Subitemdir, itemName))
 		if _, err := writefs.Copy(i.vfs, source, itemPath); err != nil {
@@ -217,6 +221,31 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 			return errors.Wrapf(err, "cannot create item %s/%s", job.collection, job.signature+"$$web")
 		}
 		i.logger.Info().Msgf("created item %s/%s: %s", job.collection, job.signature+"$$web", resp.GetMessage())
+	}
+	if _, ok := i.ffmpegOutputCodec["video"]; ok && slices.Contains(job.Missing, "$$video") {
+		source := filepath.Join(i.tempDir, folder, "video.mp4")
+		itemName := createCacheName(job.collection, job.signature+"$$video", source)
+		itemPath := job.Storage.Filebase + "/" + filepath.ToSlash(filepath.Join(job.Storage.Subitemdir, itemName))
+		if _, err := writefs.Copy(i.vfs, source, itemPath); err != nil {
+			return errors.Wrapf(err, "cannot copy %s to %s", source, itemPath)
+		}
+		resp, err := i.dbClient.CreateItem(context.Background(), &mediaserverproto.NewItem{
+			Identifier: &mediaserverproto.ItemIdentifier{
+				Collection: job.collection,
+				Signature:  job.signature + "$$video",
+			},
+			Parent: &mediaserverproto.ItemIdentifier{
+				Collection: job.collection,
+				Signature:  job.signature,
+			},
+			Urn:        itemPath,
+			IngestType: &ingestType,
+			Public:     &public,
+		})
+		if err != nil {
+			return errors.Wrapf(err, "cannot create item %s/%s", job.collection, job.signature+"$$video")
+		}
+		i.logger.Info().Msgf("created item %s/%s: %s", job.collection, job.signature+"$$video", resp.GetMessage())
 	}
 	if _, ok := i.ffmpegOutputCodec["wave"]; ok && slices.Contains(job.Missing, "$$wave") {
 		wave := filepath.Join(i.tempDir, folder, "wave.png")
@@ -283,7 +312,7 @@ func (i *IngesterAudio) Start() error {
 				item, err := i.dbClient.GetDerivateIngestItem(context.Background(), &mediaserverproto.DerivatIngestRequest{
 					Type:    "audio",
 					Subtype: "",
-					Suffix:  []string{"$$web", "$$preview", "$$wave"},
+					Suffix:  []string{"$$web", "$$video", "$$preview", "$$wave"},
 				})
 				if err != nil {
 					if s, ok := status.FromError(err); ok {

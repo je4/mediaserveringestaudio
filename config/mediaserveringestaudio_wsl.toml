@@ -11,7 +11,7 @@ ffmpegpath = "/usr/local/bin/ffmpeg"
 tempdir = "/mnt/c/temp/mediaserveringestaudio"
 
 [ffmpegoutputcodec]
-"web" = [
+"video" = [
     "-f", "lavfi",
     "-i", "color=c=#2d373c:s=1280x256",
     "-r", "25",
@@ -19,9 +19,15 @@ tempdir = "/mnt/c/temp/mediaserveringestaudio"
     "-map", "[v]",
     "-c:v", "h264_nvenc",
     "-b:v", "512k",
+    "-map", "0:a",
     "-c:a", "aac",
     "-b:a", "256k",
     "-f", "mp4"
+]
+"web" = [
+    "-map", "0:a",
+    "-c:a", "aac",
+    "-b:a", "256k",
 ]
 "wave" = [
     "-filter_complex", "[0:a]aformat=channel_layouts=mono,compand,showwavespic=s=1280x256:colors=#25d3d0[fg];color=s=1280x256:color=#2d373c,drawgrid=width=iw/20:height=ih/5:color=#25d3d0@0.1[bg];[bg][fg]overlay=format=auto,drawbox=x=(iw-w)/2:y=(ih-h)/2:w=iw:h=1:color=#25d3d0",
@@ -89,7 +95,7 @@ Endpoint = "s3-zh.lts.switch.ch"
 Region = "zurich"
 UseSSL = true
 Debug = false
-CAPEM = """-----BEGIN CERTIFICATE-----
+_CAPEM = """-----BEGIN CERTIFICATE-----
 MIIEVzCCAj+gAwIBAgIRALBXPpFzlydw27SHyzpFKzgwDQYJKoZIhvcNAQELBQAw
 TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
 cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMjQwMzEzMDAwMDAw
@@ -131,7 +137,7 @@ UseSSL = true
 Debug = false
 BaseUrl = ""
 ZipAsFolderCache = 0
-CAPEM = """-----BEGIN CERTIFICATE-----
+_CAPEM = """-----BEGIN CERTIFICATE-----
 MIIEVzCCAj+gAwIBAgIRALBXPpFzlydw27SHyzpFKzgwDQYJKoZIhvcNAQELBQAw
 TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
 cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMjQwMzEzMDAwMDAw
