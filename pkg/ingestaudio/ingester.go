@@ -92,24 +92,57 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 	defer func() {
 		os.RemoveAll(filepath.Join(i.tempDir, folder))
 	}()
-	params0 := []string{"-i", "-"}
+	var processes []*exec.Cmd
+	var pipes []*io.PipeWriter
 	if codec, ok := i.ffmpegOutputCodec["video"]; ok && slices.Contains(job.Missing, "$$video") {
-		params0 = append(params0, codec...)
-		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "video.mp4")))
+		params := []string{"-i", "-"}
+		params = append(params, codec...)
+		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "video.mp4")))
+		pr, pw := io.Pipe()
+		process := exec.Command(i.ffmpegPath, params...)
+		process.Stdin = pr
+		process.Stdout = os.Stdout
+		process.Stderr = os.Stderr
+		processes = append(processes, process)
+		pipes = append(pipes, pw)
 	}
 	if codec, ok := i.ffmpegOutputCodec["preview"]; ok && slices.Contains(job.Missing, "$$preview") {
-		params0 = append(params0, codec...)
-		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "preview.mp4")))
-	}
-	if codec, ok := i.ffmpegOutputCodec["web"]; ok && slices.Contains(job.Missing, "$$web") {
-		params0 = append(params0, codec...)
-		params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "web.m4a")))
+		params := []string{"-i", "-"}
+		params = append(params, codec...)
+		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "preview.mp4")))
+		pr, pw := io.Pipe()
+		process := exec.Command(i.ffmpegPath, params...)
+		process.Stdin = pr
+		process.Stdout = os.Stdout
+		process.Stderr = os.Stderr
+		processes = append(processes, process)
+		pipes = append(pipes, pw)
 	}
 
-	params1 := []string{"-i", "-"}
 	if codec, ok := i.ffmpegOutputCodec["wave"]; ok && slices.Contains(job.Missing, "$$wave") {
-		params1 = append(params1, codec...)
-		params1 = append(params1, filepath.ToSlash(filepath.Join(i.tempDir, folder, "wave.png")))
+		params := []string{"-i", "-"}
+		params = append(params, codec...)
+		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "wave.png")))
+		pr, pw := io.Pipe()
+		process := exec.Command(i.ffmpegPath, params...)
+		process.Stdin = pr
+		process.Stdout = os.Stdout
+		process.Stderr = os.Stderr
+		processes = append(processes, process)
+		pipes = append(pipes, pw)
+	}
+
+	if codec, ok := i.ffmpegOutputCodec["web"]; ok && slices.Contains(job.Missing, "$$web") {
+		params := []string{"-i", "-"}
+		params = append(params, codec...)
+		params = append(params, filepath.ToSlash(filepath.Join(i.tempDir, folder, "web.m4a")))
+		pr, pw := io.Pipe()
+		process := exec.Command(i.ffmpegPath, params...)
+		process.Stdin = pr
+		process.Stdout = os.Stdout
+		process.Stderr = os.Stderr
+		processes = append(processes, process)
+		pipes = append(pipes, pw)
 	}
 	/*
 		if codec, ok := i.ffmpegOutputCodec["cover"]; ok && slices.Contains(job.Missing, "$$cover") {
@@ -117,26 +150,15 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 			params0 = append(params0, filepath.ToSlash(filepath.Join(i.tempDir, folder, "cover.png")))
 		}
 	*/
-	i.logger.Debug().Msgf("ffmpeg command: ffmpeg %s", strings.Join(params0, " "))
-	i.logger.Debug().Msgf("ffmpeg command: ffmpeg %s", strings.Join(params1, " "))
-	subProcess0 := exec.Command(i.ffmpegPath, params0...)
+	for _, process := range processes {
+		i.logger.Debug().Msgf("ffmpeg command: %s", process.String())
+	}
 
-	pr0, pw0 := io.Pipe()
-	//defer pr0.Close()
-
-	pr1, pw1 := io.Pipe()
-	//defer pr1.Close()
-
-	subProcess0.Stdin = pr0
-	subProcess0.Stdout = os.Stdout
-	subProcess0.Stderr = os.Stderr
-
-	subProcess1 := exec.Command(i.ffmpegPath, params1...)
-	subProcess1.Stdin = pr1
-	subProcess1.Stdout = os.Stdout
-	subProcess1.Stderr = os.Stderr
-
-	multiWriter := io.MultiWriter(pw0, pw1)
+	var writers = make([]io.Writer, len(pipes))
+	for i, pw := range pipes {
+		writers[i] = pw
+	}
+	multiWriter := io.MultiWriter(writers...)
 
 	copyFuncResult := make(chan error)
 	go func() {
@@ -145,46 +167,33 @@ func (i *IngesterAudio) doIngest(job *JobStruct) error {
 			copyFuncResult <- errors.Wrap(err, "cannot copy source to multiwriter")
 			return
 		}
-		pw0.Close()
-		pw1.Close()
+		for _, pw := range pipes {
+			pw.Close()
+		}
 		copyFuncResult <- nil
 	}()
 
-	ffmpeg0Result := make(chan error)
-	go func() {
-		n := &checksum.NullWriter{}
-		defer io.Copy(n, subProcess0.Stdin)
-		if err := subProcess0.Run(); err != nil {
-			ffmpeg0Result <- errors.Wrap(err, "cannot run ffmpeg0")
-			return
-		}
-
-		ffmpeg0Result <- nil
-	}()
-
-	ffmpeg1Result := make(chan error)
-	go func() {
-		n := &checksum.NullWriter{}
-		defer io.Copy(n, subProcess0.Stdin)
-		if err := subProcess1.Run(); err != nil {
-			ffmpeg1Result <- errors.Wrap(err, "cannot run ffmpeg1")
-			return
-		}
-		ffmpeg1Result <- nil
-	}()
+	ffmpegResult := make(chan error)
+	for _, subProcess := range processes {
+		go func(subProcess *exec.Cmd) {
+			n := &checksum.NullWriter{}
+			defer io.Copy(n, subProcess.Stdin)
+			if err := subProcess.Run(); err != nil {
+				ffmpegResult <- errors.Wrap(err, "cannot run ffmpeg0")
+				return
+			}
+			ffmpegResult <- nil
+		}(subProcess)
+	}
 
 	var errs []error
-	for i := 0; i < 3; i++ {
+	for i := 0; i < len(processes)+1; i++ {
 		select {
 		case err := <-copyFuncResult:
 			if err != nil {
 				errs = append(errs, err)
 			}
-		case err := <-ffmpeg0Result:
-			if err != nil {
-				errs = append(errs, err)
-			}
-		case err := <-ffmpeg1Result:
+		case err := <-ffmpegResult:
 			if err != nil {
 				errs = append(errs, err)
 			}
